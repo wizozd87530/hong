@@ -1,0 +1,648 @@
+using UnityEngine;
+using UnityEngine.UI;
+using System.Collections;
+using UnityEngine.EventSystems;
+using System;
+
+namespace SeedStudio.Inverse
+{
+	public class VerticalInfiniteScrollWindow : InfiniteScrollWindow
+	{
+		public bool NoEnd = false;
+
+		public int ColumnCount = 1;
+		public int ColumnBufferLines = 2;
+		public float MoveSpeed = 1.0f;
+
+		private int m_VisiableRows = 0;
+		private int m_TotalRows = 0;
+		private int m_DataEndRow = 0;
+		private int m_CurrentRow = 0;
+
+		private float m_ScaleFactor = 1.0f;
+		private float m_DragY = 0.0f;
+		private float m_LastY = 0.0f;
+		private float m_ItemHeight = 0.0f;
+		private float m_MoveDelta = 0.0f;
+		private Vector2 m_LastDelta = Vector2.zero;
+		private Vector2 m_BeginDragPosition;
+
+		public bool IsDragging
+		{
+			get
+			{
+				return !ScrollRect.enabled;
+			}
+		}
+
+		private int EndRowIndex
+		{
+			get
+			{
+				return m_CurrentRow + m_TotalRows - 1;
+			}
+		}
+
+		private float MaxScrollRows
+		{
+			get
+			{
+				return m_VisiableRows * 5.0f ;
+			}
+		}
+
+		public int CurrentRow
+		{
+			get
+			{
+				int offset = (int)Mathf.Round(Mathf.Abs(ContentRect.anchoredPosition.y / m_ItemHeight));
+				int index = m_CurrentRow + Mathf.Clamp(offset, 0, m_TotalRows);
+				if (index < 0)
+				{
+					index += m_DataEndRow;
+				}
+				else if (index >= m_DataEndRow)
+				{
+					index -= m_DataEndRow;
+				}
+
+				return index;
+			}
+		}
+
+		public override RectTransform ContentRect
+		{
+			get
+			{
+				if (ScrollRect.content == null)
+				{
+					GameObject obj = new GameObject("Content");
+					obj.transform.SetParent(transform);
+					ScrollRect.content = obj.AddComponent<RectTransform>();
+					ScrollRect.content.anchorMin = new Vector2(0.0f, 1.0f);
+					ScrollRect.content.anchorMax = Vector2.one;
+					ScrollRect.content.pivot = new Vector2(0.5f, 1.0f);
+					ScrollRect.content.sizeDelta = new Vector2(0.0f, RectTransform.sizeDelta.y);
+					ScrollRect.content.anchoredPosition3D = Vector3.zero;
+					ScrollRect.content.localRotation = Quaternion.identity;
+					ScrollRect.content.localScale = Vector3.one;
+
+					ScrollRect.content.gameObject.AddComponent<GridLayoutGroup>();
+				}
+
+				return ScrollRect.content;
+			}
+		}
+
+		private GridLayoutGroup m_GridLayoutGroup = null;
+		public GridLayoutGroup GridLayoutGroup
+		{
+			get
+			{
+				if (m_GridLayoutGroup == null && ContentRect != null)
+				{
+					m_GridLayoutGroup = ContentRect.GetComponent<GridLayoutGroup>();
+
+					if (m_GridLayoutGroup == null)
+					{
+						m_GridLayoutGroup = ContentRect.gameObject.AddComponent<GridLayoutGroup>();
+					}
+
+					m_GridLayoutGroup.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+					m_GridLayoutGroup.constraintCount = ColumnCount;
+//					m_GridLayoutGroup.childAlignment = TextAnchor.UpperLeft;
+					m_GridLayoutGroup.startAxis = GridLayoutGroup.Axis.Horizontal;
+					m_GridLayoutGroup.startCorner = GridLayoutGroup.Corner.UpperLeft;
+
+					if (ItemTemplate != null)
+					{
+						RectTransform rect = ItemTemplate.transform as RectTransform;
+						if (rect != null)
+						{
+							m_GridLayoutGroup.cellSize = rect.sizeDelta;
+						}
+
+						LayoutElement layout = ItemTemplate.GetComponent<LayoutElement>();
+						if (layout != null && !layout.ignoreLayout)
+						{
+							m_GridLayoutGroup.cellSize = new Vector2(layout.minWidth, layout.minHeight);
+						}
+					}
+				}
+
+				return m_GridLayoutGroup;
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		void Update()
+		{
+			if (ScrollRect.enabled)
+			{
+				if (Mathf.Abs(m_MoveDelta) > float.Epsilon)
+				{
+					float delta = 0.0f;
+					if (m_MoveDelta > 0)
+					{
+						delta = MoveSpeed * m_ItemHeight * Time.deltaTime;
+					}
+					else
+					{
+						delta = -MoveSpeed * m_ItemHeight * Time.deltaTime;
+					}
+					float last = m_MoveDelta;
+					m_MoveDelta -= delta;
+
+					if ((last > 0.0f && m_MoveDelta < 0.0f) || (last < 0.0f && m_MoveDelta > 0.0f))
+					{
+						delta -= 0.0f - m_MoveDelta;
+						m_MoveDelta = 0.0f;
+					}
+
+					ContentRect.anchoredPosition += new Vector2(delta, 0.0f);
+				}
+				else if (FixPositionToItem)
+				{
+					float targetY = Mathf.Round(ContentRect.anchoredPosition.y / m_ItemHeight) * m_ItemHeight;
+					ContentRect.anchoredPosition = new Vector2(ContentRect.anchoredPosition.x, Mathf.MoveTowards(ContentRect.anchoredPosition.y, targetY, -m_ItemHeight * FixSpeedAsItemSize * Time.deltaTime));
+				}
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void UpdateContentRectSize()
+		{
+			if (GridLayoutGroup != null)
+			{
+				if (GridLayoutGroup.constraint == GridLayoutGroup.Constraint.FixedColumnCount)
+				{
+					float rect_height = (GridLayoutGroup.cellSize.y + GridLayoutGroup.spacing.y) * m_TotalRows +
+										GridLayoutGroup.spacing.y + GridLayoutGroup.padding.top + GridLayoutGroup.padding.bottom;
+					ContentRect.sizeDelta = new Vector2(ContentRect.sizeDelta.x, rect_height);
+				}
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		private void UpdateProperties()
+		{
+			if (DataList != null)
+			{
+				var constraintCount = GridLayoutGroup.constraintCount;
+
+				if (DataList.Count % constraintCount > 0)
+				{
+					m_DataEndRow = DataList.Count / constraintCount + 1;
+				}
+				else
+				{
+					m_DataEndRow = DataList.Count / constraintCount;
+				}
+
+				m_ItemHeight = GridLayoutGroup.cellSize.y + GridLayoutGroup.spacing.y;
+				m_VisiableRows = Mathf.Clamp((int)Mathf.Ceil((RectTransform.rect.height / m_ItemHeight)), 0, m_DataEndRow);
+
+				m_TotalRows = Mathf.Clamp(m_VisiableRows + ColumnBufferLines, 0, m_DataEndRow);
+
+				UpdateContentRectSize();
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void Init(IList dataList, System.Action<int, GameObject> itemUpdateCallback)
+		{
+			if (dataList == null)
+			{
+				return;
+			}
+
+			DataList = dataList;
+			OnItemUpdate = itemUpdateCallback;
+			UpdateProperties();
+
+			if (NoEnd)
+			{
+				ScrollRect.movementType = ScrollRect.MovementType.Elastic;
+			}
+
+			ScrollRect.horizontal = false;
+			ScrollRect.vertical = true;
+
+			Canvas canvas = GetComponentInParent<Canvas>();
+			if (canvas != null)
+			{
+				m_ScaleFactor = canvas.scaleFactor;
+			}
+
+			ClearItems();
+
+			int total = GridLayoutGroup.constraintCount * m_TotalRows;
+			for (int i = 0; i < total; i++)
+			{
+				if (OnItemUpdate != null && i < DataList.Count)
+				{
+					GameObject obj = CreateItem();
+					if (obj != null)
+					{
+						OnItemUpdate(i, obj);
+					}
+				}
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void UpdateData(IList dataList)
+		{
+			DataList = dataList;
+			if (DataList != null)
+			{
+				UpdateProperties();
+
+				var max_items = GridLayoutGroup.constraintCount * m_TotalRows;
+				var available_item_count = ScrollRect.content.childCount;
+				if (available_item_count < max_items)
+				{
+					var space_left = max_items - available_item_count;
+					var extra_count = DataList.Count - available_item_count;
+
+					var required_count = space_left;
+					if (space_left >= extra_count)
+					{
+						required_count = extra_count;
+					}
+
+					for (int i = 0; i < required_count; i++)
+					{
+						CreateItem();
+					}
+				}
+
+				for (int i = 0; i < ContentRect.childCount; i++)
+				{
+					Transform child = ContentRect.GetChild(i);
+
+					int item_index = m_CurrentRow * GridLayoutGroup.constraintCount + i;
+					if (item_index > -1 && item_index < DataList.Count)
+					{
+						child.gameObject.SetActive(true);
+						if (OnItemUpdate != null)
+						{
+							OnItemUpdate(item_index, child.gameObject);
+						}
+					}
+					else
+					{
+						child.gameObject.SetActive(false);
+					}
+				}
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void GoToItem(int index) // does not work properly (move to top is ok but not the end of row still working on it)
+		{
+			if (DataList == null)
+			{
+				return;
+			}
+
+			index = Mathf.Clamp(index, 0, DataList.Count - 1);
+			int row = index / GridLayoutGroup.constraintCount;
+//			if (index % GridLayoutGroup.constraintCount > 0)
+//			{
+//				row = index / GridLayoutGroup.constraintCount + 1;
+//			}
+//			else
+//			{
+//				row = index / GridLayoutGroup.constraintCount;
+//			}
+
+			if (NoEnd)
+			{
+
+			}
+			else
+			{
+
+				ContentRect.anchoredPosition = new Vector2(ContentRect.anchoredPosition.x, 0);
+				m_CurrentRow = 0;
+				for (int i = 0; i < row; i++)
+				{
+					ScrollNext();
+				}
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		public void GoToNext()
+		{
+			if (DataList != null && DataList.Count > 1 && (FixPositionToItem && ScrollRect.verticalNormalizedPosition < 1.0f || NoEnd))
+			{
+				if (Mathf.Abs(m_MoveDelta) < float.Epsilon)
+				{
+					m_MoveDelta = -m_ItemHeight;
+				}
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		public void GoToPrevious()
+		{
+			if (DataList != null && DataList.Count > 1 && (FixPositionToItem && ScrollRect.verticalNormalizedPosition > 0.0f || NoEnd))
+			{
+				if (Mathf.Abs(m_MoveDelta) < float.Epsilon)
+				{
+					m_MoveDelta = m_ItemHeight;
+				}
+			}
+		}
+
+		//--------------------------------------------------------------------------------
+		protected override bool ScrollPrevious()
+		{
+			if (DataList == null)
+			{
+				return false;
+			}
+
+			bool result = false;
+			var last_child_index = ContentRect.childCount - 1;
+			if (m_CurrentRow > 0)
+			{
+				m_CurrentRow--;
+				for (int i = GridLayoutGroup.constraintCount - 1; i >= 0; i--)
+				{
+					Transform child = ContentRect.GetChild(last_child_index);
+					if (child != null)
+					{
+						child.SetAsFirstSibling();
+						int index = m_CurrentRow * GridLayoutGroup.constraintCount + i;
+						if (index > -1)
+						{
+							child.gameObject.SetActive(true);
+							if (OnItemUpdate != null)
+							{
+								OnItemUpdate(index, child.gameObject);
+							}
+						}
+						else
+						{
+							child.gameObject.SetActive(false);
+						}
+					}
+				}
+
+				GridLayoutGroup.CalculateLayoutInputHorizontal();
+//				GridLayoutGroup.SetLayoutHorizontal();
+				GridLayoutGroup.CalculateLayoutInputVertical();
+				GridLayoutGroup.SetLayoutVertical();
+
+				ContentRect.anchoredPosition = new Vector2(ContentRect.anchoredPosition.x, m_ItemHeight * 2.0f);
+				result = true;
+			}
+			else if (NoEnd && m_TotalRows > 2)
+			{
+				m_CurrentRow--;
+				for (int i = GridLayoutGroup.constraintCount - 1; i >= 0; i--)
+				{
+					Transform child = ContentRect.GetChild(last_child_index);
+					if (child != null)
+					{
+						child.SetAsFirstSibling();
+						int index = m_CurrentRow * GridLayoutGroup.constraintCount + i;
+
+						if (m_CurrentRow < 0)
+						{
+							index = m_DataEndRow + m_CurrentRow;
+						}
+
+						if (index > -1)
+						{
+							child.gameObject.SetActive(true);
+							if (OnItemUpdate != null)
+							{
+								OnItemUpdate(index, child.gameObject);
+							}
+						}
+						else
+						{
+							child.gameObject.SetActive(false);
+						}
+					}
+				}
+
+				if (EndRowIndex < 0)
+				{
+					m_CurrentRow = m_DataEndRow - m_TotalRows;
+				}
+
+				GridLayoutGroup.CalculateLayoutInputHorizontal();
+				GridLayoutGroup.CalculateLayoutInputVertical();
+				GridLayoutGroup.SetLayoutVertical();
+				ContentRect.anchoredPosition = new Vector2(ContentRect.anchoredPosition.x, m_ItemHeight * 2.0f);
+				result = true;
+			}
+			return result;
+		}
+
+		//--------------------------------------------------------------------------------
+		protected override bool ScrollNext()
+		{
+			if (DataList == null)
+			{
+				return false;
+			}
+
+			bool result = false;
+			if (m_CurrentRow + m_TotalRows < m_DataEndRow)
+			{
+				m_CurrentRow++;
+				for (int i = 0; i < GridLayoutGroup.constraintCount; i++)
+				{
+					Transform child = ContentRect.GetChild(0);
+					if (child != null)
+					{
+						child.SetAsLastSibling();
+						int index = EndRowIndex * GridLayoutGroup.constraintCount + i;
+						if (index < DataList.Count)
+						{
+							child.gameObject.SetActive(true);
+							if (OnItemUpdate != null)
+							{
+								OnItemUpdate(index, child.gameObject);
+							}
+						}
+						else
+						{
+							child.gameObject.SetActive(false);
+						}
+					}
+				}
+
+				GridLayoutGroup.CalculateLayoutInputHorizontal();
+//				GridLayoutGroup.SetLayoutHorizontal();
+				GridLayoutGroup.CalculateLayoutInputVertical();
+				GridLayoutGroup.SetLayoutVertical();
+
+				ContentRect.anchoredPosition = new Vector2(ContentRect.anchoredPosition.x, m_ItemHeight * 1.0f);
+				result = true;
+			}
+			else if (NoEnd && m_TotalRows > 2)
+			{
+				m_CurrentRow++;
+				for (int i = 0; i < GridLayoutGroup.constraintCount; i++)
+				{
+					Transform child = ContentRect.GetChild(0);
+					if (child != null)
+					{
+						child.SetAsLastSibling();
+						int index = EndRowIndex * GridLayoutGroup.constraintCount + i;
+
+						if (EndRowIndex >= m_DataEndRow)
+						{
+							index = (EndRowIndex - m_DataEndRow) * GridLayoutGroup.constraintCount + i;
+						}
+
+						if (index < DataList.Count)
+						{
+							child.gameObject.SetActive(true);
+							if (OnItemUpdate != null)
+							{
+								OnItemUpdate(index, child.gameObject);
+							}
+						}
+						else
+						{
+							child.gameObject.SetActive(false);
+						}
+					}
+				}
+
+				if (EndRowIndex - m_TotalRows + 1 == m_DataEndRow)
+				{
+					m_CurrentRow = 0;
+				}
+
+				GridLayoutGroup.CalculateLayoutInputHorizontal();
+				//				GridLayoutGroup.SetLayoutHorizontal();
+				GridLayoutGroup.CalculateLayoutInputVertical();
+				GridLayoutGroup.SetLayoutVertical();
+
+				ContentRect.anchoredPosition = new Vector2(ContentRect.anchoredPosition.x, m_ItemHeight * 1.0f);
+
+				result = true;
+			}
+
+			return result;
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void OnPointerDown(UnityEngine.EventSystems.PointerEventData eventData)
+		{
+			ScrollRect.velocity = Vector2.zero;
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void OnBeginDrag(UnityEngine.EventSystems.PointerEventData eventData)
+		{
+			ScrollRect.enabled = false;
+			m_MoveDelta = 0.0f;
+			m_DragY = ContentRect.anchoredPosition.y;
+			RectTransformUtility.ScreenPointToLocalPointInRectangle(ContentRect, eventData.position, Camera.main, out m_BeginDragPosition);
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void OnDrag(UnityEngine.EventSystems.PointerEventData eventData)
+		{
+			if (ContentRect.anchoredPosition.y < 0)
+			{
+				eventData.delta = eventData.delta * Mathf.Clamp01((RectTransform.sizeDelta.y + 1.5f * ContentRect.anchoredPosition.y) / RectTransform.sizeDelta.y);
+			}
+			else if (ContentRect.anchoredPosition.y > ContentRect.sizeDelta.y - RectTransform.sizeDelta.y)
+			{
+				eventData.delta = eventData.delta * Mathf.Clamp01((ContentRect.sizeDelta.y - ContentRect.anchoredPosition.y) / ContentRect.sizeDelta.y);
+			}
+
+			Vector2 current_pos = new Vector3();
+			RectTransformUtility.ScreenPointToLocalPointInRectangle(ContentRect, eventData.position, Camera.main, out current_pos);
+
+			m_DragY += Mathf.Clamp((current_pos.y - m_BeginDragPosition.y), -m_ItemHeight, m_ItemHeight);
+
+			if (ScrollRect.movementType == ScrollRect.MovementType.Clamped)
+			{
+				m_DragY = Mathf.Clamp(m_DragY, 0.0f, ContentRect.sizeDelta.y - RectTransform.sizeDelta.y);
+			}
+
+			if (eventData.delta.y > 0.0f) //scrollDown
+			{
+				if (m_DragY > m_ItemHeight * 2.0f)
+				{
+					if (ScrollNext())
+					{
+						m_DragY -= m_ItemHeight * 1.0f;
+						m_BeginDragPosition.y += m_ItemHeight * 1.0f;
+					}
+				}
+			}
+			else // scroll up
+			{
+				if (m_DragY < m_ItemHeight * 1.0f)
+				{
+					if (ScrollPrevious())
+					{
+						m_DragY += m_ItemHeight * 1.0f;
+						m_BeginDragPosition.y -= m_ItemHeight * 1.0f;
+					}
+				}
+			}
+			ContentRect.anchoredPosition = new Vector2(ContentRect.anchoredPosition.x, m_DragY);
+			m_LastDelta = eventData.delta;
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void OnEndDrag(UnityEngine.EventSystems.PointerEventData eventData)
+		{
+			m_LastY = ContentRect.anchoredPosition.y;
+			ScrollRect.enabled = true;
+			ScrollRect.OnEndDrag(eventData);
+
+			if (!FixPositionToItem)
+			{
+				Vector2 vel = new Vector2(m_LastDelta.x, Mathf.Clamp(m_LastDelta.y / m_ScaleFactor, -m_ItemHeight, m_ItemHeight) * MaxScrollRows);
+				ScrollRect.velocity = vel;
+			}
+			m_LastDelta = Vector2.zero;
+		}
+
+		//--------------------------------------------------------------------------------
+		public override void OnValueChange(Vector2 normalPosition)
+		{
+			float currentY = ContentRect.anchoredPosition.y;
+
+			if (currentY > m_LastY) // Scroll Donw
+			{
+				if (currentY > m_ItemHeight * 2.0f)
+				{
+					ScrollNext();
+				}
+			}
+			else if (currentY < m_LastY) // Scroll UP
+			{
+				if (currentY < m_ItemHeight * 1.0f)
+				{
+					ScrollPrevious();
+				}
+			}
+
+			if (!NoEnd)
+			{
+				if (ScrollRect.verticalNormalizedPosition < 0.0f || ScrollRect.verticalNormalizedPosition > 1.0f)
+				{
+					m_MoveDelta = 0.0f;
+				}
+			}
+
+			m_LastY = ContentRect.anchoredPosition.y;
+		}
+	}
+}
